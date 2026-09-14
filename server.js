@@ -124,9 +124,9 @@ app.post('/v1/chat/completions', async (req, res) => {
 const blazeRequest = {
   model: blazeModel,
   messages: messages,
-  temperature: temperature || 0.85,
-  max_tokens: max_tokens || 9024,
-  stream: stream || false
+  temperature: temperature ?? 0.85,
+  max_tokens: max_tokens ?? 9024,
+  stream: false
 };
 
     // ---------------------------------------------------------
@@ -141,7 +141,7 @@ const blazeRequest = {
           'Authorization': `Bearer ${blazeApiKey}`,
           'Content-Type': 'application/json'
         },
-        responseType: stream ? 'stream' : 'json'
+        responseType: 'json'
       }
     );
 
