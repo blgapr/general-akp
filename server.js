@@ -233,35 +233,75 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.json(response.data);
     }
 
-  } catch (error) {
+  }  catch (error) {
 
     console.error('========== PROXY ERROR ==========');
+    console.error('Status:', error.response?.status);
     console.error('Message:', error.message);
     console.error('Code:', error.code);
-    console.error('Status:', error.response?.status);
 
-    if (error.response) {
-      console.error('Response headers:', error.response.headers);
+    let upstreamBody = null;
 
-      if (typeof error.response.data === 'string') {
-        console.error('Blaze response body:', error.response.data);
-      } else if (Buffer.isBuffer(error.response.data)) {
+    // When stream=true, Axios gives us an IncomingMessage stream.
+    if (error.response?.data &&
+        typeof error.response.data.on === 'function') {
+
+      try {
+        const chunks = [];
+
+        for await (const chunk of error.response.data) {
+          chunks.push(Buffer.isBuffer(chunk)
+            ? chunk
+            : Buffer.from(chunk)
+          );
+        }
+
+        upstreamBody = Buffer.concat(chunks).toString('utf8');
+
+        // Don't flood Railway logs.
         console.error(
           'Blaze response body:',
-          error.response.data.toString()
+          upstreamBody.substring(0, 10000)
         );
-      } else {
+
+      } catch (streamError) {
         console.error(
-          'Blaze response data:',
-          error.response.data
+          'Could not read Blaze error stream:',
+          streamError.message
         );
       }
+
+    } else if (error.response?.data) {
+
+      if (typeof error.response.data === 'string') {
+        upstreamBody = error.response.data;
+      } else {
+        upstreamBody = JSON.stringify(error.response.data);
+      }
+
+      console.error(
+        'Blaze response body:',
+        upstreamBody.substring(0, 10000)
+      );
     }
 
     console.error('=================================');
 
-    if (error.response?.data && typeof error.response.data === 'object') {
-      return res.status(error.response.status || 500).json(error.response.data);
+    // Return Blaze's actual error to Janitor when possible.
+    if (upstreamBody) {
+      try {
+        const parsed = JSON.parse(upstreamBody);
+
+        return res
+          .status(error.response?.status || 500)
+          .json(parsed);
+
+      } catch (parseError) {
+        return res
+          .status(error.response?.status || 500)
+          .type('text/plain')
+          .send(upstreamBody);
+      }
     }
 
     return res.status(error.response?.status || 500).json({
