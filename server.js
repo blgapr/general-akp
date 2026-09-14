@@ -235,29 +235,28 @@ app.post('/v1/chat/completions', async (req, res) => {
 
   } catch (error) {
 
+    console.error('========== PROXY ERROR ==========');
+    console.error('Status:', error.response?.status);
     console.error(
-      'Proxy error:',
-      error.response?.data || error.message
+      'Blaze response:',
+      JSON.stringify(error.response?.data, null, 2)
     );
+    console.error('Message:', error.message);
+    console.error('=================================');
 
-    res.status(error.response?.status || 500).json({
+    if (error.response?.data) {
+      return res.status(error.response.status).json(error.response.data);
+    }
+
+    return res.status(500).json({
       error: {
-        message:
-          error.response?.data?.error?.message ||
-          error.message ||
-          'Internal server error',
-
-        type:
-          error.response?.data?.error?.type ||
-          'invalid_request_error',
-
-        code:
-          error.response?.data?.error?.code ||
-          error.response?.status ||
-          500
+        message: error.message || 'Internal server error',
+        type: 'proxy_error',
+        code: 500
       }
     });
   }
+
 });
 
 // Catch-all for unsupported endpoints
