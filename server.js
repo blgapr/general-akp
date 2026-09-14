@@ -14,7 +14,7 @@ app.use(express.json({ limit: '20mb' }));
 const BLAZE_API_BASE = process.env.BLAZE_API_BASE || 'https://blazeinference.com/v1';
 
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
-const SHOW_REASONING = true; // Set to true to show reasoning with <think> tags
+const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // Model mapping
 const MODEL_MAPPING = {
@@ -236,26 +236,43 @@ app.post('/v1/chat/completions', async (req, res) => {
   } catch (error) {
 
     console.error('========== PROXY ERROR ==========');
-    console.error('Status:', error.response?.status);
-    console.error(
-      'Blaze response:',
-      JSON.stringify(error.response?.data, null, 2)
-    );
     console.error('Message:', error.message);
-    console.error('=================================');
+    console.error('Code:', error.code);
+    console.error('Status:', error.response?.status);
 
-    if (error.response?.data) {
-      return res.status(error.response.status).json(error.response.data);
+    if (error.response) {
+      console.error('Response headers:', error.response.headers);
+
+      if (typeof error.response.data === 'string') {
+        console.error('Blaze response body:', error.response.data);
+      } else if (Buffer.isBuffer(error.response.data)) {
+        console.error(
+          'Blaze response body:',
+          error.response.data.toString()
+        );
+      } else {
+        console.error(
+          'Blaze response data:',
+          error.response.data
+        );
+      }
     }
 
-    return res.status(500).json({
+    console.error('=================================');
+
+    if (error.response?.data && typeof error.response.data === 'object') {
+      return res.status(error.response.status || 500).json(error.response.data);
+    }
+
+    return res.status(error.response?.status || 500).json({
       error: {
         message: error.message || 'Internal server error',
         type: 'proxy_error',
-        code: 500
+        code: error.response?.status || 500
       }
     });
   }
+
 
 });
 
