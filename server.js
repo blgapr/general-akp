@@ -123,14 +123,9 @@ app.post('/v1/chat/completions', async (req, res) => {
 
 const blazeRequest = {
   model: blazeModel,
-  messages: [
-    {
-      role: 'user',
-      content: 'Say hello in one sentence.'
-    }
-  ],
-  temperature: 0.7,
-  max_tokens: 400,
+  messages: messages,
+  temperature: temperature || 0.85,
+  max_tokens: max_tokens || 9024,
   stream: stream || false
 };
 
