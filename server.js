@@ -1,4 +1,4 @@
-// server.js - OpenAI to Blaze Inference API Proxy
+// server.js - OpenAI to Blaze/NVIDIA Inference API Proxy
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -10,13 +10,27 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 
-// Blaze Inference API configuration
-const BLAZE_API_BASE = process.env.BLAZE_API_BASE || 'https://blazeinference.com/v1';
+// ---------------------------------------------------------
+// API PROVIDER CONFIGURATION
+// ---------------------------------------------------------
 
-// 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
-const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
+// Blaze
+const BLAZE_API_BASE =
+  process.env.BLAZE_API_BASE || 'https://blazeinference.com/v1';
 
+// NVIDIA
+const NVIDIA_API_BASE =
+  process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
+
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
+
+// 🔥 REASONING DISPLAY TOGGLE
+const SHOW_REASONING = false;
+
+// ---------------------------------------------------------
 // Model mapping
+// ---------------------------------------------------------
+
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'deepseek-ai/deepseek-v4-flash',
   'gpt-4': 'deepseek-ai/deepseek-v4-pro',
@@ -29,22 +43,28 @@ const MODEL_MAPPING = {
   'meta/llama-3.1-70b-instruct': 'deepseek-ai/deepseek-v4-flash'
 };
 
-// Health check endpoint
+// ---------------------------------------------------------
+// Health check
+// ---------------------------------------------------------
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    service: 'OpenAI to Blaze Inference Proxy',
+    service: 'OpenAI to Blaze/NVIDIA Proxy',
     reasoning_display: SHOW_REASONING
   });
 });
 
-// List models endpoint (OpenAI compatible)
+// ---------------------------------------------------------
+// List models endpoint
+// ---------------------------------------------------------
+
 app.get('/v1/models', (req, res) => {
   const models = Object.keys(MODEL_MAPPING).map(model => ({
     id: model,
     object: 'model',
     created: Date.now(),
-    owned_by: 'blaze-inference-proxy'
+    owned_by: 'blaze-nvidia-proxy'
   }));
 
   res.json({
@@ -53,9 +73,13 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
-// Chat completions endpoint (main proxy)
+// ---------------------------------------------------------
+// Chat completions endpoint
+// ---------------------------------------------------------
+
 app.post('/v1/chat/completions', async (req, res) => {
   try {
+
     const {
       model,
       messages,
@@ -65,43 +89,43 @@ app.post('/v1/chat/completions', async (req, res) => {
     } = req.body;
 
     // ---------------------------------------------------------
-    // Get Blaze API key
+    // Determine requested provider
     //
-    // Supports BOTH:
+    // Normal:
+    // Authorization: Bearer sk-blaze-xxxx
     //
-    // 1. Normal OpenAI-style Authorization header:
-    //    Authorization: Bearer sk-blaze-...
+    // NVIDIA:
+    // Authorization: Bearer nvidia
     //
-    // 2. JSON body:
-    //    { "api_key": "sk-blaze-..." }
-    //
-    // 3. JSON body:
-    //    { "apiKey": "sk-blaze-..." }
-    //
-    // This means you can change the Blaze key from JanitorAI
-    // without changing anything on Railway.
+    // Or:
+    // { "api_key": "nvidia" }
+    // { "apiKey": "nvidia" }
     // ---------------------------------------------------------
 
-    let blazeApiKey = null;
+    let suppliedApiKey = null;
 
     const authorization = req.headers.authorization;
 
-    if (authorization && authorization.toLowerCase().startsWith('bearer ')) {
-      blazeApiKey = authorization.substring(7).trim();
+    if (
+      authorization &&
+      authorization.toLowerCase().startsWith('bearer ')
+    ) {
+      suppliedApiKey = authorization.substring(7).trim();
     }
 
-    if (!blazeApiKey && req.body.api_key) {
-      blazeApiKey = req.body.api_key;
+    if (!suppliedApiKey && req.body.api_key) {
+      suppliedApiKey = req.body.api_key;
     }
 
-    if (!blazeApiKey && req.body.apiKey) {
-      blazeApiKey = req.body.apiKey;
+    if (!suppliedApiKey && req.body.apiKey) {
+      suppliedApiKey = req.body.apiKey;
     }
 
-    if (!blazeApiKey) {
+    if (!suppliedApiKey) {
       return res.status(401).json({
         error: {
-          message: 'Missing Blaze API key. Provide it through the Authorization header or api_key in the request body.',
+          message:
+            'Missing API key. Provide it through the Authorization header or api_key in the request body.',
           type: 'authentication_error',
           code: 'missing_api_key'
         }
@@ -109,105 +133,205 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     // ---------------------------------------------------------
-    // Select Blaze model
+    // PROVIDER SELECTION
     // ---------------------------------------------------------
 
-    const blazeModel = MODEL_MAPPING[model] || model;
+    const useNvidia =
+      suppliedApiKey.toLowerCase() === 'nvidia';
+
+    let apiBase;
+    let upstreamApiKey;
+    let upstreamModel;
+
+    if (useNvidia) {
+
+      // -------------------------------------------------------
+      // NVIDIA MODE
+      // -------------------------------------------------------
+
+      if (!NVIDIA_API_KEY) {
+        console.error(
+          'NVIDIA_API_KEY environment variable is not configured.'
+        );
+
+        return res.status(500).json({
+          error: {
+            message: 'NVIDIA API key is not configured on the proxy server.',
+            type: 'configuration_error',
+            code: 'missing_nvidia_api_key'
+          }
+        });
+      }
+
+      apiBase = NVIDIA_API_BASE;
+
+      // IMPORTANT:
+      // Use the secret stored in the server environment.
+      // Do NOT use "nvidia" as the real upstream API key.
+      upstreamApiKey = NVIDIA_API_KEY;
+
+      // NVIDIA uses its own model names.
+      //
+      // If the client sends one of your aliases, translate it.
+      // Otherwise pass the model name through unchanged.
+      upstreamModel = MODEL_MAPPING[model] || model;
+
+      console.log(
+        `Routing request to NVIDIA: model=${upstreamModel}`
+      );
+
+    } else {
+
+      // -------------------------------------------------------
+      // BLAZE MODE
+      // -------------------------------------------------------
+
+      apiBase = BLAZE_API_BASE;
+      upstreamApiKey = suppliedApiKey;
+
+      upstreamModel = MODEL_MAPPING[model] || model;
+
+      console.log(
+        `Routing request to Blaze: model=${upstreamModel}`
+      );
+    }
 
     // ---------------------------------------------------------
-    // Build request for Blaze
-    //
-    // Blaze is already OpenAI-compatible, so we don't need
-    // NVIDIA-specific transformations.
+    // Build upstream request
     // ---------------------------------------------------------
 
-const blazeRequest = {
-  model: blazeModel,
-  messages: messages,
-  temperature: temperature ?? 0.85,
-  max_tokens: max_tokens ?? 9024,
-  stream: false
-};
+    const upstreamRequest = {
+      model: upstreamModel,
+      messages: messages,
+      temperature: temperature ?? 0.85,
+      max_tokens: max_tokens ?? 9024,
+
+      // Always request streaming from upstream if the client
+      // requested streaming.
+      stream: !!stream
+    };
 
     // ---------------------------------------------------------
-    // Make request to Blaze Inference API
+    // Make request
     // ---------------------------------------------------------
 
     const response = await axios.post(
-      `${BLAZE_API_BASE}/chat/completions`,
-      blazeRequest,
+      `${apiBase}/chat/completions`,
+      upstreamRequest,
       {
         headers: {
-          'Authorization': `Bearer ${blazeApiKey}`,
+          'Authorization': `Bearer ${upstreamApiKey}`,
           'Content-Type': 'application/json'
         },
-        responseType: 'json'
+
+        // IMPORTANT:
+        //
+        // For streaming, Axios must receive the response as a
+        // stream.
+        responseType: stream ? 'stream' : 'json'
       }
     );
 
-    if (stream) {
-      // -------------------------------------------------------
-      // Handle streaming response
-      //
-      // Blaze already uses OpenAI-compatible SSE, so we mostly
-      // pass the stream through unchanged.
-      // -------------------------------------------------------
+    // ---------------------------------------------------------
+    // STREAMING RESPONSE
+    // ---------------------------------------------------------
 
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
+    if (stream) {
+
+      res.setHeader(
+        'Content-Type',
+        'text/event-stream'
+      );
+
+      res.setHeader(
+        'Cache-Control',
+        'no-cache'
+      );
+
+      res.setHeader(
+        'Connection',
+        'keep-alive'
+      );
 
       let buffer = '';
 
       response.data.on('data', (chunk) => {
+
         buffer += chunk.toString();
 
         const lines = buffer.split('\n');
+
         buffer = lines.pop() || '';
 
         lines.forEach(line => {
-          if (line.startsWith('data: ')) {
-            if (line.includes('[DONE]')) {
-              res.write(line + '\n\n');
-              return;
-            }
 
-            try {
-              const data = JSON.parse(line.slice(6));
+          if (!line.startsWith('data: ')) {
+            return;
+          }
 
-              // Optional reasoning conversion.
-              //
-              // If Blaze provides reasoning_content and
-              // SHOW_REASONING is enabled, convert it into
-              // <think> tags for Janitor.
-              if (
-                SHOW_REASONING &&
-                data.choices?.[0]?.delta
-              ) {
-                const delta = data.choices[0].delta;
+          // ---------------------------------------------------
+          // DONE
+          // ---------------------------------------------------
 
-                const reasoning = delta.reasoning_content;
-                const content = delta.content;
+          if (line.includes('[DONE]')) {
+            res.write(line + '\n\n');
+            return;
+          }
 
-                if (reasoning) {
-                  delta.content = `<think>\n${reasoning}`;
-                  delete delta.reasoning_content;
-                }
+          try {
 
-                if (content && reasoning) {
-                  delta.content += `</think>\n\n${content}`;
-                }
-              } else if (data.choices?.[0]?.delta?.reasoning_content) {
-                // Hide reasoning if disabled
-                delete data.choices[0].delta.reasoning_content;
+            const data = JSON.parse(
+              line.slice(6)
+            );
+
+            // -------------------------------------------------
+            // Reasoning handling
+            // -------------------------------------------------
+
+            if (
+              SHOW_REASONING &&
+              data.choices?.[0]?.delta
+            ) {
+
+              const delta =
+                data.choices[0].delta;
+
+              const reasoning =
+                delta.reasoning_content;
+
+              const content =
+                delta.content;
+
+              if (reasoning) {
+
+                delta.content =
+                  `<think>\n${reasoning}`;
+
+                delete delta.reasoning_content;
               }
 
-              res.write(`data: ${JSON.stringify(data)}\n\n`);
+              if (content && reasoning) {
 
-            } catch (e) {
-              // Pass through anything that isn't JSON
-              res.write(line + '\n\n');
+                delta.content +=
+                  `</think>\n\n${content}`;
+              }
+
+            } else if (
+              data.choices?.[0]?.delta?.reasoning_content
+            ) {
+
+              // Hide reasoning if disabled
+              delete data.choices[0].delta.reasoning_content;
             }
+
+            res.write(
+              `data: ${JSON.stringify(data)}\n\n`
+            );
+
+          } catch (e) {
+
+            // Pass through anything that isn't JSON
+            res.write(line + '\n\n');
           }
         });
       });
@@ -217,86 +341,129 @@ const blazeRequest = {
       });
 
       response.data.on('error', (err) => {
-        console.error('Stream error:', err);
+
+        console.error(
+          'Stream error:',
+          err.message
+        );
+
         res.end();
       });
 
     } else {
 
-      // -------------------------------------------------------
-      // Non-stream response
-      //
-      // Blaze is already OpenAI-compatible, so return its
-      // response directly instead of rebuilding it.
-      // -------------------------------------------------------
+      // ---------------------------------------------------------
+      // NON-STREAM RESPONSE
+      // ---------------------------------------------------------
 
       res.json(response.data);
     }
 
-  }  catch (error) {
+  } catch (error) {
 
-    console.error('========== PROXY ERROR ==========');
-    console.error('Status:', error.response?.status);
-    console.error('Message:', error.message);
-    console.error('Code:', error.code);
+    console.error(
+      '========== PROXY ERROR =========='
+    );
+
+    console.error(
+      'Status:',
+      error.response?.status
+    );
+
+    console.error(
+      'Message:',
+      error.message
+    );
+
+    console.error(
+      'Code:',
+      error.code
+    );
 
     let upstreamBody = null;
 
-    // When stream=true, Axios gives us an IncomingMessage stream.
-    if (error.response?.data &&
-        typeof error.response.data.on === 'function') {
+    // ---------------------------------------------------------
+    // Read upstream error stream
+    // ---------------------------------------------------------
+
+    if (
+      error.response?.data &&
+      typeof error.response.data.on === 'function'
+    ) {
 
       try {
+
         const chunks = [];
 
-        for await (const chunk of error.response.data) {
-          chunks.push(Buffer.isBuffer(chunk)
-            ? chunk
-            : Buffer.from(chunk)
+        for await (
+          const chunk of error.response.data
+        ) {
+
+          chunks.push(
+            Buffer.isBuffer(chunk)
+              ? chunk
+              : Buffer.from(chunk)
           );
         }
 
-        upstreamBody = Buffer.concat(chunks).toString('utf8');
+        upstreamBody =
+          Buffer.concat(chunks).toString('utf8');
 
-        // Don't flood Railway logs.
         console.error(
-          'Blaze response body:',
+          'Upstream response body:',
           upstreamBody.substring(0, 10000)
         );
 
       } catch (streamError) {
+
         console.error(
-          'Could not read Blaze error stream:',
+          'Could not read upstream error stream:',
           streamError.message
         );
       }
 
     } else if (error.response?.data) {
 
-      if (typeof error.response.data === 'string') {
-        upstreamBody = error.response.data;
+      if (
+        typeof error.response.data === 'string'
+      ) {
+
+        upstreamBody =
+          error.response.data;
+
       } else {
-        upstreamBody = JSON.stringify(error.response.data);
+
+        upstreamBody =
+          JSON.stringify(error.response.data);
       }
 
       console.error(
-        'Blaze response body:',
+        'Upstream response body:',
         upstreamBody.substring(0, 10000)
       );
     }
 
-    console.error('=================================');
+    console.error(
+      '================================='
+    );
 
-    // Return Blaze's actual error to Janitor when possible.
+    // ---------------------------------------------------------
+    // Return upstream error to client
+    // ---------------------------------------------------------
+
     if (upstreamBody) {
+
       try {
-        const parsed = JSON.parse(upstreamBody);
+
+        const parsed =
+          JSON.parse(upstreamBody);
 
         return res
           .status(error.response?.status || 500)
           .json(parsed);
 
       } catch (parseError) {
+
         return res
           .status(error.response?.status || 500)
           .type('text/plain')
@@ -304,32 +471,72 @@ const blazeRequest = {
       }
     }
 
-    return res.status(error.response?.status || 500).json({
-      error: {
-        message: error.message || 'Internal server error',
-        type: 'proxy_error',
-        code: error.response?.status || 500
-      }
-    });
+    return res
+      .status(error.response?.status || 500)
+      .json({
+        error: {
+          message:
+            error.message ||
+            'Internal server error',
+
+          type: 'proxy_error',
+
+          code:
+            error.response?.status ||
+            500
+        }
+      });
   }
-
-
 });
 
-// Catch-all for unsupported endpoints
+// ---------------------------------------------------------
+// Catch-all
+// ---------------------------------------------------------
+
 app.all('*', (req, res) => {
+
   res.status(404).json({
     error: {
-      message: `Endpoint ${req.path} not found`,
-      type: 'invalid_request_error',
+      message:
+        `Endpoint ${req.path} not found`,
+
+      type:
+        'invalid_request_error',
+
       code: 404
     }
   });
 });
 
+// ---------------------------------------------------------
+// Start server
+// ---------------------------------------------------------
+
 app.listen(PORT, () => {
-  console.log(`OpenAI to Blaze Inference Proxy running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Blaze API: ${BLAZE_API_BASE}`);
-  console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
+
+  console.log(
+    `OpenAI to Blaze/NVIDIA Proxy running on port ${PORT}`
+  );
+
+  console.log(
+    `Health check: http://localhost:${PORT}/health`
+  );
+
+  console.log(
+    `Blaze API: ${BLAZE_API_BASE}`
+  );
+
+  console.log(
+    `NVIDIA API: ${NVIDIA_API_BASE}`
+  );
+
+  console.log(
+    `NVIDIA key configured: ${NVIDIA_API_KEY ? 'YES' : 'NO'}`
+  );
+
+  console.log(
+    `Reasoning display: ${
+      SHOW_REASONING ? 'ENABLED' : 'DISABLED'
+    }`
+  );
 });
