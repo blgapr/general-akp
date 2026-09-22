@@ -558,6 +558,10 @@ app.use(express.json({ limit: '20mb' }));
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
+// ▼ NEW — Z.AI branch target (used whenever the incoming key isn't 'nvidia')
+const ZAI_API_BASE = process.env.ZAI_API_BASE || 'https://api.z.ai/api/paas/v4';
+// ▲ NEW
+
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
 const SHOW_REASONING = true; // Set to true to show reasoning with <think> tags
 
@@ -606,6 +610,15 @@ app.get('/v1/models', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
+
+    // ▼ NEW — branch on the key Janitor sends:
+    //   key === 'nvidia' → NIM, using the env key (current behavior)
+    //   anything else    → treated as a Z.ai key, forwarded to Z.AI
+    const incomingKey = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    const useNim = incomingKey.toLowerCase() === 'nvidia';
+    const upstreamBase = useNim ? NIM_API_BASE : ZAI_API_BASE;
+    const upstreamKey = useNim ? NIM_API_KEY : incomingKey;
+    // ▲ NEW
 
     nimModel = model;
     // Smart model selection with fallback
@@ -657,13 +670,15 @@ app.post('/v1/chat/completions', async (req, res) => {
     };
     
     // Make request to NVIDIA NIM API
-    const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
+    // ▼ CHANGED — upstreamBase/upstreamKey instead of hardcoded NIM values
+    const response = await axios.post(`${upstreamBase}/chat/completions`, nimRequest, {
       headers: {
-        'Authorization': `Bearer ${NIM_API_KEY}`,
+        'Authorization': `Bearer ${upstreamKey}`,
         'Content-Type': 'application/json'
       },
       responseType: stream ? 'stream' : 'json'
     });
+    // ▲ CHANGED
     
     if (stream) {
       // Handle streaming response with reasoning
