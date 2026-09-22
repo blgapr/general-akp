@@ -785,12 +785,24 @@ app.post('/v1/chat/completions', async (req, res) => {
     
   } catch (error) {
     console.error('Proxy error:', error.message);
-    
-    res.status(error.response?.status || 500).json({
+    const status = error.response?.status || 500;
+    const data = error.response?.data;
+
+    // Streaming requests: axios hands the error body back as a stream — drain it to text
+    if (data && typeof data.on === 'function') {
+      let txt = '';
+      data.on('data', c => (txt += c.toString()));
+      data.on('end', () => res.status(status).type('application/json').send(txt));
+      data.on('error', () => res.status(status).json({ error: { message: error.message, code: status } }));
+      return;
+    }
+
+    // Non-streaming: pass Z.ai's body through untouched
+    res.status(status).json(data ?? {
       error: {
         message: error.message || 'Internal server error',
         type: 'invalid_request_error',
-        code: error.response?.status || 500
+        code: status
       }
     });
   }
